@@ -1,19 +1,3 @@
-"""
-Graduated Symbols symbology for point features.
-
-For each element, on its own point layer (e.g. field "As" on layer "As mg/kg"):
-  - Graduated Symbols (point layer)
-  - ArcGIS default template: Circle 1 (Fuchsia fill, Black outline)
-  - Symbol sizes scaled linearly from 4 pt (min) to 18 pt (max)
-  - Manual interval, 7 classes
-  - Break VALUES: min -> 5th -> 25th -> 50th -> 75th -> 90th -> 95th -> max
-  - Rounding: half-up, 1 decimal
-  - Labels: contiguous (x, y] ranges, 1 decimal place
-  - Legend: descending order (highest concentrations on top)
-
-Run inside ArcGIS Pro (CURRENT project must be open).
-"""
-
 import arcpy
 import math
 import traceback
@@ -53,11 +37,6 @@ SYMBOL_SIZES = [
 REVERSE_SIZE_ORDER = True
 
 DEFAULT_GALLERY_SYMBOL = "Circle 1"
-
-# Fill = Fuchsia (255, 0, 255), Outline = Black (0, 0, 0)
-FILL_COLOR = {'RGB': [255, 0, 255, 100]}
-OUTLINE_COLOR = {'RGB': [0, 0, 0, 100]}
-OUTLINE_WIDTH = 0.7
 
 
 # ---------------------------------------------------------------------------
@@ -162,8 +141,8 @@ def _cim_break_count(layer):
     return 0
 
 
-def _set_marker_size(symbol_ref, size):
-    """Adjust marker size and fix outline color/width in-place on an existing CIM symbol reference."""
+def _set_marker_properties(symbol_ref, size):
+    """Adjust marker size, color, and outline in-place on an existing CIM symbol reference."""
     if symbol_ref is None or getattr(symbol_ref, "symbol", None) is None:
         return
     point_symbol = symbol_ref.symbol
@@ -171,6 +150,8 @@ def _set_marker_size(symbol_ref, size):
         return
     for symbol_layer in point_symbol.symbolLayers:
         layer_type = type(symbol_layer).__name__
+        
+        # 1. Update the overall size
         if layer_type in (
             "CIMVectorMarker",
             "CIMCharacterMarker",
@@ -179,26 +160,23 @@ def _set_marker_size(symbol_ref, size):
         ) and hasattr(symbol_layer, "size"):
             symbol_layer.size = float(size)
             
-            # Dig into the marker graphics to find the stroke and set it to black with 0.7pt width
-            sub_layers = []
-            # CIMVectorMarker uses 'markerGraphics' instead of 'graphics'
-            if layer_type == "CIMVectorMarker" and hasattr(symbol_layer, "markerGraphics"):
-                for graphic in symbol_layer.markerGraphics:
-                    if hasattr(graphic, "symbol") and hasattr(graphic.symbol, "symbolLayers"):
-                        sub_layers.extend(graphic.symbol.symbolLayers)
-            elif layer_type in ("CIMCharacterMarker", "CIMShapeMarker") and hasattr(symbol_layer, "symbol") and hasattr(symbol_layer.symbol, "symbolLayers"):
-                sub_layers.extend(symbol_layer.symbol.symbolLayers)
-            
-            for sub_layer in sub_layers:
-                if type(sub_layer).__name__ == "CIMSolidStroke":
-                    if hasattr(sub_layer, "color") and sub_layer.color:
-                        if hasattr(sub_layer.color, 'r'):
-                            sub_layer.color.r = 0
-                            sub_layer.color.g = 0
-                            sub_layer.color.b = 0
-                            sub_layer.color.a = 100
-                    if hasattr(sub_layer, "width"):
-                        sub_layer.width = OUTLINE_WIDTH
+        # 2. Update the fill color, outline color, and outline width for Circle 1 (Vector Marker)
+        if layer_type == "CIMVectorMarker" and hasattr(symbol_layer, "markerGraphics"):
+            for graphic in getattr(symbol_layer, "markerGraphics", []):
+                g_sym = getattr(graphic, "symbol", None)
+                if g_sym and hasattr(g_sym, "symbolLayers"):
+                    for inner_layer in g_sym.symbolLayers:
+                        inner_type = type(inner_layer).__name__
+                        if inner_type == "CIMSolidFill" and hasattr(inner_layer, "color"):
+                            # Fuchsia Fill
+                            inner_layer.color.values = [255, 0, 255, 100]
+                        elif inner_type == "CIMSolidStroke":
+                            # Black Outline
+                            if hasattr(inner_layer, "color"):
+                                inner_layer.color.values = [0, 0, 0, 100]
+                            # Outline Width
+                            if hasattr(inner_layer, "width"):
+                                inner_layer.width = 0.7
 
 
 def _create_graduated_breaks(layer, field, num_classes):
@@ -234,13 +212,10 @@ def _apply_gallery_circle_to_breaks(class_breaks, num_classes):
     sizes = _size_order(num_classes)
     for i, class_break in enumerate(class_breaks):
         class_break.symbol.applySymbolFromGallery(DEFAULT_GALLERY_SYMBOL)
-        class_break.symbol.color = FILL_COLOR
-        # Outline color and width are explicitly fixed in the CIM step, as arcpy.mp PointSymbol 
-        # does not natively support changing outlineColor directly.
         class_break.symbol.size = SYMBOL_SIZES[sizes[i]]
 
 
-def _apply_manual_breaks_cim(layer, field, rounded_breaks, labels, num_classes):
+def _apply_manual_breaks_cim(layer, field, layer_name, rounded_breaks, labels, num_classes):
     """
     Set manual percentile breaks in-place on the existing CIM renderer.
     Does NOT replace symbols or rebuild the renderer (avoids blank template /
@@ -266,6 +241,10 @@ def _apply_manual_breaks_cim(layer, field, rounded_breaks, labels, num_classes):
             renderer.classificationMethod = "Manual"
             renderer.field = field
             renderer.fields = [field]
+            
+            # --- FIX: Set the heading to match the layer name instead of the raw field name ---
+            renderer.heading = layer_name 
+            
             renderer.minimumBreak = float(rounded_breaks[0])
             renderer.showInAscendingOrder = False
 
@@ -273,12 +252,10 @@ def _apply_manual_breaks_cim(layer, field, rounded_breaks, labels, num_classes):
                 class_break = renderer.breaks[i]
                 class_break.upperBound = float(rounded_breaks[i + 1])
                 class_break.label = labels[i]
-                _set_marker_size(class_break.symbol, SYMBOL_SIZES[sizes[i]])
+                _set_marker_properties(class_break.symbol, SYMBOL_SIZES[sizes[i]])
 
             if renderer.breaks:
                 renderer.defaultSymbol = renderer.breaks[0].symbol
-                # Explicitly fix the template/default symbol to show 11pt and 0.7pt outline in the pane
-                _set_marker_size(renderer.defaultSymbol, 11.0)
 
             cim_layer.expanded = False
             layer.setDefinition(cim_layer)
@@ -293,11 +270,11 @@ def _apply_manual_breaks_cim(layer, field, rounded_breaks, labels, num_classes):
 # ---------------------------------------------------------------------------
 # Symbology application
 # ---------------------------------------------------------------------------
-def apply_graduated_symbols(layer, field, breaks, labels, num_classes=NUM_CLASSES):
+def apply_graduated_symbols(layer, field, layer_name, breaks, labels, num_classes=NUM_CLASSES):
     """
     Hybrid workflow:
       1. arcpy.mp  — create renderer + gallery Circle 1 on each break (symbols)
-      2. CIM in-place — manual break values, labels, legend order, sizes, outline color and width
+      2. CIM in-place — manual break values, labels, legend order, sizes & properties
     """
     rounded_breaks = build_rounded_breaks(breaks)
 
@@ -305,7 +282,7 @@ def apply_graduated_symbols(layer, field, breaks, labels, num_classes=NUM_CLASSE
     _apply_gallery_circle_to_breaks(class_breaks, num_classes)
     _commit(sym, layer)
 
-    _apply_manual_breaks_cim(layer, field, rounded_breaks, labels, num_classes)
+    _apply_manual_breaks_cim(layer, field, layer_name, rounded_breaks, labels, num_classes)
 
     if _cim_break_count(layer) != num_classes:
         raise RuntimeError(
@@ -321,7 +298,7 @@ def apply_symbology_for_field(active_map, layer_name, field, breaks, labels):
     last_exc = None
     for attempt in (1, 2):
         try:
-            apply_graduated_symbols(layer, field, breaks, labels)
+            apply_graduated_symbols(layer, field, layer_name, breaks, labels)
         except Exception as exc:
             last_exc = exc
             print(f"    {layer_name} / {field}: attempt {attempt} raised: {exc}")
@@ -346,6 +323,7 @@ def main():
     failed_fields = []
     print("=== Applying Graduated Symbols (ArcGIS Circle 1, 7 classes, Manual) ===")
     print(f"    Symbols: {DEFAULT_GALLERY_SYMBOL} via ClassBreak.symbol")
+    print(f"    Properties: Fuchsia fill, Black outline, 0.7 pt width")
     print(f"    Breaks:  manual via CIM in-place edit")
     print(f"    Symbol sizes: {SYMBOL_SIZES}")
     print(f"    REVERSE_SIZE_ORDER = {REVERSE_SIZE_ORDER}")
