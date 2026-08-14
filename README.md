@@ -67,7 +67,3 @@ Applying manual breaks to a Graduated Symbols renderer via `arcpy` can sometimes
 
 1. **`arcpy.mp`:** Generates the baseline Graduated Symbols renderer, applies Equal Interval (to initialize the breaks), and binds the baseline gallery shape ("Circle 1").
 2. **CIM (`getDefinition`)**: Re-enters the layer's definition to safely overwrite the classification method to "Manual", inject exact percentile break thresholds, apply custom string labels, fix the legend heading, and drill down into the `symbolLayers` array to alter vector stroke/fill colors.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](https://www.google.com/search?q=LICENSE) file for details.
